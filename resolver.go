@@ -64,7 +64,7 @@ type Resolver struct {
 
 func (r Resolver) Resolve() (*NATDetail, error) {
 
-	token, err := generateToken()
+	token, err := GenerateToken()
 	if err != nil {
 		return nil, err
 	}
@@ -182,7 +182,7 @@ func buildMsg(changeIp bool, changePort bool) (*stun.Message, error) {
 	return msg, nil
 }
 
-func generateToken() (string, error) {
+func GenerateToken() (string, error) {
 	buf := make([]byte, 4)
 	if _, err := rand.Read(buf); err != nil {
 		return "", err

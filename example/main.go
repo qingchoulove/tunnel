@@ -22,6 +22,7 @@ func NewMockSignal() tunnel.Signal {
 }
 
 func (s *MockSignal) SendSignal(detail *tunnel.NATDetail) error {
+	fmt.Printf("Send local nat detail:\n")
 	w := bufio.NewWriter(s.writer)
 	bytes, err := json.Marshal(detail)
 	if err != nil {
@@ -40,6 +41,7 @@ func (s *MockSignal) SendSignal(detail *tunnel.NATDetail) error {
 }
 
 func (s *MockSignal) ReadSignal() (*tunnel.NATDetail, error) {
+	fmt.Printf("Please input remote nat detail: \n")
 	r := bufio.NewReader(s.reader)
 	var in []byte
 	for {
@@ -78,5 +80,4 @@ func main() {
 		return
 	}
 	t.Ping()
-
 }

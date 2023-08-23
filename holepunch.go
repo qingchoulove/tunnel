@@ -11,6 +11,9 @@ import (
 // TODO: better timeout
 const timeout = time.Second * 30
 
+// probability of success is 98.34%
+const triesNum = 512
+
 func handshake(tunnel *Tunnel) chan error {
 	cDone := make(chan error, 1)
 	local := tunnel.localNAT
@@ -42,17 +45,10 @@ func handshakeLocalSymmetric(tunnel *Tunnel, done chan error) {
 		return
 	}
 	c := make(chan *net.UDPAddr, 1)
+	stopChan := make(chan int, 1)
 	var selected int32 = 0
-	/**
-	Simulating the easy case:
-	  peer A -> endpoint-dependent NAT --- endpoint-independent NAT <- peer B
-	  A probes 1 target port on B from 800 source ports
-	    (this is 1.2% of the search space)
-	  B probes 800 target ports on A from 1 source port
-	    (this is 1.2% of the search space)
-	Probability of successful traversal: 100.00%
-	*/
-	for i := 0; i < 800; i++ {
+	// birthday attack
+	for i := 0; i < triesNum; i++ {
 		time.Sleep(time.Millisecond)
 		go func() {
 			conn, err := net.ListenUDP("udp4", nil)
@@ -64,7 +60,7 @@ func handshakeLocalSymmetric(tunnel *Tunnel, done chan error) {
 				_ = conn.Close()
 			}()
 			// send handshake
-			go udpWrite(conn, remoteAddr, NewPingMessage(local.Token))
+			go udpWrite(conn, remoteAddr, NewHandshakeMessage(local.Token), stopChan)
 			// rev response
 			msg, _, err := udpRead(conn)
 			if err != nil {
@@ -78,10 +74,10 @@ func handshakeLocalSymmetric(tunnel *Tunnel, done chan error) {
 			if !atomic.CompareAndSwapInt32(&selected, 0, 1) {
 				return
 			}
-			log.Debugf("rev peer response, token: %s\n", msg.token)
 			localAddr := conn.LocalAddr().(*net.UDPAddr)
 			// ensure conn is closed
 			_ = conn.Close()
+			close(stopChan)
 			c <- localAddr
 		}()
 	}
@@ -117,21 +113,27 @@ func handshakeRemoteSymmetric(tunnel *Tunnel, done chan error) {
 
 	r := rand.New(rand.NewSource(time.Now().UnixNano()))
 	randPorts := r.Perm(65535)
-
+	stopChan := make(chan int, 1)
 	// send handshake
 	go func() {
-		for i := 0; i < 800; i++ {
+	OUTER:
+		for i := 0; i < triesNum; i++ {
 			time.Sleep(time.Millisecond)
-			// remote is symmetric NAT, use random port
-			dst := &net.UDPAddr{
-				IP:   remoteAddr.IP,
-				Port: randPorts[i],
+			select {
+			case <-stopChan:
+				break OUTER
+			default:
+				dst := &net.UDPAddr{
+					IP:   remoteAddr.IP,
+					Port: randPorts[i],
+				}
+				go udpWrite(conn, dst, NewHandshakeMessage(local.Token), stopChan)
 			}
-			go udpWrite(conn, dst, NewPingMessage(local.Token))
 		}
 	}()
 	// rev response
 	msg, dst, err := udpRead(conn)
+	close(stopChan)
 	if err != nil {
 		done <- err
 		return
@@ -140,7 +142,6 @@ func handshakeRemoteSymmetric(tunnel *Tunnel, done chan error) {
 		done <- fmt.Errorf("token fail, token: %s", msg.token)
 		return
 	}
-	log.Debugf("rev peer response, token: %s\n", msg.token)
 	tunnel.remoteAddr = *dst
 	tunnel.conn = *conn
 	close(done)
@@ -159,10 +160,12 @@ func handshakeNonSymmetric(tunnel *Tunnel, done chan error) {
 		done <- err
 		return
 	}
+	stopChan := make(chan int, 1)
 	// send handshake
-	go udpWrite(conn, addr, NewPingMessage(local.Token))
+	go udpWrite(conn, addr, NewHandshakeMessage(local.Token), stopChan)
 	// rev response
 	msg, _, err := udpRead(conn)
+	close(stopChan)
 	if err != nil {
 		log.Debugf("udp read err, %s\n", err)
 		done <- err
@@ -172,20 +175,20 @@ func handshakeNonSymmetric(tunnel *Tunnel, done chan error) {
 		done <- fmt.Errorf("token fail, token: %s", msg.token)
 		return
 	}
-	log.Debugf("rev peer response, token: %s\n", msg.token)
 	tunnel.remoteAddr = *addr
 	tunnel.conn = *conn
 	close(done)
 }
 
-func udpWrite(conn *net.UDPConn, addr *net.UDPAddr, msg *Message) {
-	// TODO: when connect success, stop write
+func udpWrite(conn *net.UDPConn, addr *net.UDPAddr, msg *Message, stopChan chan int) {
 	bytes, _ := msg.Marshal()
 	timeout := time.After(timeout)
 	tick := time.Tick(time.Second)
 OUTER:
 	for {
 		select {
+		case <-stopChan:
+			break OUTER
 		case <-timeout:
 			break OUTER
 		case <-tick:
@@ -207,7 +210,7 @@ func udpRead(conn *net.UDPConn) (*Message, *net.UDPAddr, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	msg, err := Unmarshal(bytes[:n])
+	msg, err := UnmarshalMessage(bytes[:n])
 	if err != nil {
 		return nil, nil, err
 	}

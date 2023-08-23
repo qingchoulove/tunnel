@@ -32,6 +32,12 @@ func (t *Tunnel) Connect() error {
 	c := handshake(t)
 	err, notClosed := <-c
 	if !notClosed {
+		log.Debugln("tunnel hole punch success")
+		log.Debugf("local addr: %s, remote addr: %s\n", t.localAddr.String(), t.remoteAddr.String())
+		err = t.validate()
+		if err != nil {
+			return err
+		}
 		log.Debugln("tunnel connect success")
 		return nil
 	}
@@ -53,12 +59,69 @@ func (t *Tunnel) Ping() {
 				log.Debugf("tunnel ping err, %s\n", err)
 				break
 			}
-			log.Debugf("tunnel ping rev, %s\n", string(bytes[:n]))
+			msg, err := UnmarshalMessage(bytes[:n])
+			if err != nil {
+				log.Debugf("tunnel ping err, %s\n", err)
+				break
+			}
+			if msg.mType == MessageTypePing || msg.mType == MessageTypeHandshake {
+				log.Debugln("tunnel ping rev, ping or handshake")
+			} else {
+				log.Debugf("tunnel ping rev, %s\n", string(msg.payload))
+			}
 		}
 	}()
+	msg, err := NewDataMessage(t.localNAT.Token, []byte("ping")).Marshal()
+	if err != nil {
+		log.Debugf("tunnel ping err, %s\n", err)
+		return
+	}
 	for {
 		time.Sleep(time.Second)
-		_, _ = t.conn.WriteTo([]byte("ping"), &t.remoteAddr)
+		_, _ = t.conn.WriteTo(msg, &t.remoteAddr)
+	}
+}
+
+func (t *Tunnel) validate() error {
+	// send handshake message will receive a ping message
+	msg, err := NewHandshakeMessage(t.localNAT.Token).Marshal()
+	if err != nil {
+		return err
+	}
+	pingMsg, err := NewPingMessage(t.localNAT.Token).Marshal()
+	if err != nil {
+		return err
+	}
+	timeout := time.After(10 * time.Second)
+	bytes := make([]byte, 1024)
+	for {
+		select {
+		case <-timeout:
+			return fmt.Errorf("validate timeout")
+		default:
+			time.Sleep(time.Second)
+			n, err := t.conn.WriteTo(msg, &t.remoteAddr)
+			if err != nil {
+				return err
+			}
+			// rev
+			err = t.conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+			if err != nil {
+				return err
+			}
+			n, _, err = t.conn.ReadFrom(bytes)
+			if err != nil {
+				break
+			}
+			rev, err := UnmarshalMessage(bytes[:n])
+			if err != nil {
+				break
+			}
+			_, _ = t.conn.WriteTo(pingMsg, &t.remoteAddr)
+			if rev.mType == MessageTypePing {
+				return nil
+			}
+		}
 	}
 }
 
@@ -95,13 +158,9 @@ func (t *Tunnel) initTunnel() error {
 	}
 	t.localNAT = localNAT
 	t.remoteNAT = remoteNAT
-	addr, err := net.ResolveUDPAddr("udp4", localNAT.Addr)
-	if err != nil {
-		return err
-	}
 	t.localAddr = net.UDPAddr{
 		IP:   net.IPv4zero,
-		Port: addr.Port,
+		Port: conn.LocalAddr().(*net.UDPAddr).Port,
 	}
 	return nil
 }
