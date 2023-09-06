@@ -60,7 +60,10 @@ func handshakeLocalSymmetric(tunnel *Tunnel, done chan error) {
 				_ = conn.Close()
 			}()
 			// send handshake
-			go udpWrite(conn, remoteAddr, NewHandshakeMessage(local.Token), stopChan)
+			err = udpWrite(conn, remoteAddr, NewHandshakeMessage(local.Token))
+			if err != nil {
+				return
+			}
 			// rev response
 			msg, _, err := udpRead(conn)
 			if err != nil {
@@ -90,7 +93,7 @@ func handshakeLocalSymmetric(tunnel *Tunnel, done chan error) {
 			done <- err
 			return
 		}
-		tunnel.conn = *conn
+		tunnel.conn = conn
 		tunnel.remoteAddr = *remoteAddr
 		close(done)
 	}
@@ -127,7 +130,7 @@ func handshakeRemoteSymmetric(tunnel *Tunnel, done chan error) {
 					IP:   remoteAddr.IP,
 					Port: randPorts[i],
 				}
-				go udpWrite(conn, dst, NewHandshakeMessage(local.Token), stopChan)
+				_ = udpWrite(conn, dst, NewHandshakeMessage(local.Token))
 			}
 		}
 	}()
@@ -143,7 +146,7 @@ func handshakeRemoteSymmetric(tunnel *Tunnel, done chan error) {
 		return
 	}
 	tunnel.remoteAddr = *dst
-	tunnel.conn = *conn
+	tunnel.conn = conn
 	close(done)
 }
 
@@ -162,7 +165,11 @@ func handshakeNonSymmetric(tunnel *Tunnel, done chan error) {
 	}
 	stopChan := make(chan int, 1)
 	// send handshake
-	go udpWrite(conn, addr, NewHandshakeMessage(local.Token), stopChan)
+	err = udpWrite(conn, addr, NewHandshakeMessage(local.Token))
+	if err != nil {
+		done <- err
+		return
+	}
 	// rev response
 	msg, _, err := udpRead(conn)
 	close(stopChan)
@@ -176,28 +183,17 @@ func handshakeNonSymmetric(tunnel *Tunnel, done chan error) {
 		return
 	}
 	tunnel.remoteAddr = *addr
-	tunnel.conn = *conn
+	tunnel.conn = conn
 	close(done)
 }
 
-func udpWrite(conn *net.UDPConn, addr *net.UDPAddr, msg *Message, stopChan chan int) {
+func udpWrite(conn *net.UDPConn, addr *net.UDPAddr, msg *Message) error {
 	bytes, _ := msg.Marshal()
-	timeout := time.After(timeout)
-	tick := time.Tick(time.Second)
-OUTER:
-	for {
-		select {
-		case <-stopChan:
-			break OUTER
-		case <-timeout:
-			break OUTER
-		case <-tick:
-			_, err := conn.WriteTo(bytes, addr)
-			if err != nil {
-				break OUTER
-			}
-		}
+	_, err := conn.WriteTo(bytes, addr)
+	if err != nil {
+		return err
 	}
+	return nil
 }
 
 func udpRead(conn *net.UDPConn) (*Message, *net.UDPAddr, error) {

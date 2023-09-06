@@ -84,6 +84,11 @@ func (m *Message) Marshal() ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
+func (m *Message) String() string {
+	return fmt.Sprintf("header: %d, version: %d, token: %s, type: %d, len: %d, payload: %s",
+		m.header, m.version, m.token, m.mType, m.len, string(m.payload))
+}
+
 func UnmarshalMessage(bytes []byte) (*Message, error) {
 	if len(bytes) < 12 {
 		return nil, fmt.Errorf("failed to unmarshal message, bytes: %s", bytes)

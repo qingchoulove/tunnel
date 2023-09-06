@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -64,20 +65,22 @@ func (s *MockSignal) ReadSignal() (*tunnel.NATDetail, error) {
 	return &detail, nil
 }
 
+var (
+	cliMode = flag.Bool("client", false, "client mode")
+)
+
 func main() {
-
+	flag.Parse()
 	signal := NewMockSignal()
-
 	t, err := tunnel.NewTunnel(signal)
 	if err != nil {
 		fmt.Printf("Error: %s\n", err)
 		return
 	}
-
 	err = t.Connect()
 	if err != nil {
 		fmt.Printf("Error: %s\n", err)
 		return
 	}
-	t.Ping()
+	t.Ping(*cliMode)
 }
