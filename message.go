@@ -49,6 +49,9 @@ func NewPingMessage(token string) *Message {
 }
 
 func NewDataMessage(token string, data []byte) *Message {
+	if len(data) > 1000 {
+		panic("data length too long")
+	}
 	return &Message{
 		header:  magicHeader,
 		version: 1,

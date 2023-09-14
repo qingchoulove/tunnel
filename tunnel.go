@@ -15,12 +15,15 @@ type Tunnel struct {
 	localNAT   *NATDetail
 	remoteNAT  *NATDetail
 	signal     Signal
+	cancelFunc context.CancelFunc
 }
 
-func NewTunnel(signal Signal) (*Tunnel, error) {
+func NewTunnel(ctx context.Context, signal Signal) (*Tunnel, error) {
+	ctx, cancelFunc := context.WithCancel(ctx)
 	return &Tunnel{
-		ctx:    context.Background(),
-		signal: signal,
+		ctx:        ctx,
+		signal:     signal,
+		cancelFunc: cancelFunc,
 	}, nil
 }
 
@@ -39,55 +42,62 @@ func (t *Tunnel) Connect() error {
 	return err
 }
 
-// TODO: temporary code
-func (t *Tunnel) Ping(client bool) {
-	go t.runHandler()
-	go t.keepAlive()
-	tick := time.Tick(time.Second * 5)
-	for {
-		select {
-		case <-t.ctx.Done():
-			return
-		case <-tick:
-			msg, err := NewDataMessage(t.localNAT.Token, []byte("hello world")).Marshal()
-			if err != nil {
-				log.Debugf("marshal message error: %s\n", err)
-				continue
-			}
-			_, _ = t.conn.WriteTo(msg, &t.remoteAddr)
-		}
+// TODO: temporary code ↓
+func (t *Tunnel) Test(mode string) {
+	wrapper := upgrade(t)
+	if mode == "server" {
+		wrapper.listen()
+	} else {
+		wrapper.dial()
 	}
 }
 
 func (t *Tunnel) runHandler() {
 	bytes := make([]byte, 1024)
+	timeout := time.NewTimer(time.Second * 10)
 	for {
-		err := t.conn.SetReadDeadline(time.Now().Add(time.Second * 10))
-		if err != nil {
-			log.Debugf("set read deadline error: %s\n", err)
-			continue
-		}
-		n, addr, err := t.conn.ReadFrom(bytes)
-		if err != nil {
-			log.Debugf("read from conn error: %s\n", err)
-			continue
-		}
-		if addr.String() != t.remoteAddr.String() {
-			log.Debugf("received message from unexpected addr: %s\n", addr.String())
-			continue
-		}
-		msg, err := UnmarshalMessage(bytes[:n])
-		if err != nil {
-			log.Debugf("unmarshal message error: %s\n", err)
-			continue
-		}
-		switch msg.mType {
-		case MessageTypeHandshake:
-			log.Debugf("received handshake message from %s\n", addr.String())
-		case MessageTypePing:
-			log.Debugf("received ping message from %s\n", addr.String())
-		case MessageTypeData:
-			log.Debugf("received data message from %s, payload: %s\n", addr.String(), string(msg.payload))
+		select {
+		case <-t.ctx.Done():
+			return
+		case <-timeout.C:
+			t.Close()
+			return
+		default:
+			err := t.conn.SetReadDeadline(time.Now().Add(time.Second * 5))
+			if err != nil {
+				log.Debugf("set read deadline error: %s\n", err)
+				continue
+			}
+			n, addr, err := t.conn.ReadFrom(bytes)
+			if err != nil {
+				log.Debugf("read from conn error: %s\n", err)
+				continue
+			}
+			if addr.String() != t.remoteAddr.String() {
+				log.Debugf("received message from unexpected addr: %s\n", addr.String())
+				continue
+			}
+			msg, err := UnmarshalMessage(bytes[:n])
+			if err != nil {
+				log.Debugf("unmarshal message error: %s\n", err)
+				continue
+			}
+			if msg.token != t.remoteNAT.Token {
+				log.Debugf("received message with unexpected token: %s\n", msg.token)
+				continue
+			}
+			switch msg.mType {
+			case MessageTypeHandshake:
+				log.Debugf("received handshake message from %s\n", addr.String())
+			case MessageTypePing:
+				log.Debugf("received ping message from %s\n", addr.String())
+				if !timeout.Stop() {
+					<-timeout.C
+				}
+				timeout.Reset(time.Second * 10)
+			case MessageTypeData:
+				log.Debugf("received data message from %s, payload: %s\n", addr.String(), string(msg.payload))
+			}
 		}
 	}
 }
@@ -108,6 +118,8 @@ func (t *Tunnel) keepAlive() {
 		}
 	}
 }
+
+// TODO: temporary code ↑
 
 func (t *Tunnel) initTunnel() error {
 	conn, err := net.ListenPacket("udp4", "0.0.0.0:0")
@@ -147,4 +159,12 @@ func (t *Tunnel) initTunnel() error {
 		Port: conn.LocalAddr().(*net.UDPAddr).Port,
 	}
 	return nil
+}
+
+func (t *Tunnel) Close() {
+	t.cancelFunc()
+	err := t.conn.Close()
+	if err != nil {
+		log.Debugf("close tunnel error: %s\n", err)
+	}
 }
