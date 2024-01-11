@@ -7,10 +7,11 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
-	"github.com/quic-go/quic-go"
 	"io"
 	"math/big"
 	"time"
+
+	"github.com/quic-go/quic-go"
 )
 
 type QuicWrapper struct {
@@ -75,18 +76,15 @@ func (q *QuicWrapper) dial() {
 		log.Debugf("open stream error: %v\n", err)
 		return
 	}
-	tick := time.Tick(time.Second)
-OUTER:
-	for {
-		select {
-		case <-tick:
-			_, err = stream.Write([]byte("foobar"))
-			if err != nil {
-				log.Debugf("write error: %s\n", err.Error())
-				break OUTER
-			}
-			log.Debugln("client write")
+	tick := time.NewTicker(time.Second)
+
+	for range tick.C {
+		_, err = stream.Write([]byte("foobar"))
+		if err != nil {
+			log.Debugf("write error: %s\n", err.Error())
+			break
 		}
+		log.Debugln("client write")
 	}
 	log.Debugln("client exit")
 }

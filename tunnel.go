@@ -1,9 +1,12 @@
 package tunnel
 
 import (
+	"bufio"
 	"context"
 	"fmt"
+	"io"
 	"net"
+	"os"
 	"time"
 )
 
@@ -44,11 +47,42 @@ func (t *Tunnel) Connect() error {
 
 // TODO: temporary code ↓
 func (t *Tunnel) Test(mode string) {
-	wrapper := upgrade(t)
 	if mode == "server" {
-		wrapper.listen()
+		t.runHandler()
 	} else {
-		wrapper.dial()
+		go t.keepAlive()
+		for {
+			select {
+			case <-t.ctx.Done():
+				return
+			default:
+				fmt.Printf("Message: ")
+				r := bufio.NewReader(os.Stdin)
+				var in []byte
+				for {
+					var err error
+					in, err = r.ReadBytes('\n')
+					if err != io.EOF {
+						if err != nil {
+							break
+						}
+					}
+					if len(in) > 0 {
+						break
+					}
+				}
+				msg, err := NewDataMessage(t.localNAT.Token, in).Marshal()
+				if err != nil {
+					log.Debugf("marshal message error: %s\n", err)
+					continue
+				}
+				_, err = t.conn.WriteTo(msg, &t.remoteAddr)
+				if err != nil {
+					log.Debugf("send message error: %s\n", err)
+					continue
+				}
+			}
+		}
 	}
 }
 
@@ -90,7 +124,6 @@ func (t *Tunnel) runHandler() {
 			case MessageTypeHandshake:
 				log.Debugf("received handshake message from %s\n", addr.String())
 			case MessageTypePing:
-				log.Debugf("received ping message from %s\n", addr.String())
 				if !timeout.Stop() {
 					<-timeout.C
 				}
@@ -108,12 +141,12 @@ func (t *Tunnel) keepAlive() {
 	if err != nil {
 		return
 	}
-	tick := time.Tick(time.Second)
+	tick := time.NewTicker(time.Second)
 	for {
 		select {
 		case <-t.ctx.Done():
 			return
-		case <-tick:
+		case <-tick.C:
 			_, _ = t.conn.WriteTo(pingMsg, &t.remoteAddr)
 		}
 	}

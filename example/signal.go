@@ -5,10 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/gorilla/websocket"
 	"io"
 	"os"
 	"tunnel"
+
+	"github.com/gorilla/websocket"
 )
 
 type MockSignal struct {

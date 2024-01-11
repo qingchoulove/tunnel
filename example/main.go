@@ -6,12 +6,12 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"syscall"
 	"tunnel"
 )
 
 var (
-	mode         = flag.String("mode", "client", "usage mode")
-	signalServer = flag.String("signal", "ws://127.0.0.1:10086/ws", "signal server")
+	mode = flag.String("mode", "client", "usage mode")
 )
 
 func main() {
@@ -19,20 +19,16 @@ func main() {
 
 	ctx, cancelFunc := context.WithCancel(context.Background())
 	c := make(chan os.Signal, 1)
-	signal.Notify(c, os.Interrupt, os.Kill)
+	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
 
 	go func() {
 		<-c
 		cancelFunc()
 	}()
 
-	ws, err := NewWebsocketSignal(ctx, *signalServer)
-	if err != nil {
-		fmt.Printf("Error: %s\n", err)
-		return
-	}
+	s := NewMockSignal()
 
-	t, err := tunnel.NewTunnel(ctx, ws)
+	t, err := tunnel.NewTunnel(ctx, s)
 	if err != nil {
 		fmt.Printf("Error: %s\n", err)
 		return
