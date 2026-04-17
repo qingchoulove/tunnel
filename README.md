@@ -1,42 +1,85 @@
-# Tunnel(Developing)
+# Tunnel
 
-## Description
+A Go library for building peer-to-peer applications with NAT traversal and HTTP/2 transport.
 
-Tunnel that enables NAT traversal and QUIC support for building peer-to-peer (P2P) applications:
+## How it works
 
-Tunnel is an open-source Golang package that provides Network Address Translation (NAT) traversal and Quick UDP Internet
-Connections (QUIC) protocol functionality to streamline the development of decentralized, serverless P2P applications.
+```
+UDP Hole Punching → QUIC → HTTP/2
+```
 
-The core capabilities of Tunnel include:
+1. Both peers exchange NAT info via a signal server
+2. UDP hole punching establishes a direct connection through NAT
+3. QUIC provides encrypted, multiplexed transport over the UDP connection
+4. HTTP/2 runs over QUIC streams — both peers are symmetric, each can send requests and register handlers
 
-NAT Traversal via UDP Hole Punching - Tunnel base the Session Traversal Utilities for NAT (STUN) protocol and
-leverages birthday attacks to establish direct peer-to-peer connectivity through symmetric NAT devices.
+## Features
 
-Integration of the QUIC Protocol - Tunnel incorporates QUIC protocol wrappers that facilitate P2P communication with
-encryption, authentication, congestion control, and connection migration.
+- **NAT traversal** — supports Full Cone, Restricted Cone, Port Restricted Cone, and Symmetric NAT (via birthday attack)
+- **LAN shortcut** — automatically prefers the local network path when both peers are on the same LAN
+- **Symmetric peers** — no server/client distinction; both sides get an `http.Client` and can register `http.Handler`
+- **Cloudflare Worker signal** — built-in signaling via a Cloudflare Worker + KV, no infrastructure needed
 
-Peer Discovery Mechanisms - Tunnel offers peer discovery APIs to locate other peers across the P2P network and exchange
-connection information.
+## Quick start
 
-User-Friendly API - The GoHole API abstracts away the complexities of NAT traversal and QUIC. Developers can focus on
-application logic while GoHole handles the underlying P2P communication.
+### 1. Deploy the signal server
 
-Tunnel empowers developers to rapidly construct decentralized, serverless applications such as messaging, file sharing,
-real-time communication, and more. By managing NAT traversal and transport-layer security, Tunnel streamlines P2P
-development in Golang.
+```bash
+cd worker
+# Fill in your KV namespace ID in wrangler.toml, then:
+wrangler kv namespace create SIGNAL_KV
+wrangler deploy
+```
 
-The networking boilerplate code is handled by Tunnel:
+### 2. Run the example chat app
 
-- UDP hole punching for NAT traversal
-- QUIC encryption and multiplexing
-- Peer discovery and info exchange
-- Connection management, migration, and resilience
+```bash
+# First peer — prints a room token
+go run ./example -name=Alice -signal=cloudflare -worker=https://<your-worker>.workers.dev
 
-Tunnel is available on Github.
+# Second peer — joins with the token
+go run ./example -name=Bob -signal=cloudflare -worker=https://<your-worker>.workers.dev -room=<token>
+```
 
-## Example
+Both peers connect directly. Type a message and press Enter to chat.
+
+## API
+
+```go
+// Connect establishes a P2P connection using the provided signal.
+t, _ := tunnel.NewTunnel(ctx, signal)
+t.Connect()
+
+// ConnectHTTP2 upgrades the connection to HTTP/2.
+// Returns a *Peer — both sides are symmetric.
+peer, _ := t.ConnectHTTP2()
+
+// Register a handler (served to the remote peer)
+peer.Handle("/hello", func(w http.ResponseWriter, r *http.Request) {
+    fmt.Fprint(w, "hello!")
+})
+
+// Send a request to the remote peer
+resp, _ := peer.Client.Get("https://tunnel/hello")
+```
+
+### Signal interface
+
+Implement `tunnel.Signal` to use any signaling mechanism:
+
+```go
+type Signal interface {
+    SendSignal(detail *NATDetail) error
+    ReadSignal() (*NATDetail, error)
+}
+```
+
+Built-in implementations in `example/signal.go`:
+- `MockSignal` — stdin/stdout, for local testing
+- `WebsocketSignal` — WebSocket-based signal server
+- `CloudflareSignal` — Cloudflare Worker + KV
 
 ## Reference
 
 - [Birthday Problem](https://en.wikipedia.org/wiki/Birthday_problem)
-- [how-nat-traversal-works](https://tailscale.com/blog/how-nat-traversal-works/)
+- [How NAT Traversal Works](https://tailscale.com/blog/how-nat-traversal-works/)

@@ -9,5 +9,5 @@ var log = logrus.New()
 
 func init() {
 	log.Out = os.Stdout
-	log.Level = logrus.DebugLevel
+	log.Level = logrus.WarnLevel
 }

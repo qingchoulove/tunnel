@@ -1,0 +1,7 @@
+name = "tunnel-signal"
+main = "index.js"
+compatibility_date = "2024-01-01"
+
+[[kv_namespaces]]
+binding = "SIGNAL_KV"
+id = "2b37e7a8137f48b79b4524d1dc2cceb1"

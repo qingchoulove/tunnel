@@ -21,12 +21,12 @@ type request struct {
 
 var stunServers = []request{
 	{
-		stun:       "stun.miwifi.com:3478",
+		stun:       "stun.l.google.com:19302",
 		changeIp:   false,
 		changePort: false,
 	},
 	{
-		stun:       "stun.syncthing.net:3478",
+		stun:       "stun1.l.google.com:19302",
 		changeIp:   false,
 		changePort: false,
 	},
@@ -52,9 +52,10 @@ const (
 )
 
 type NATDetail struct {
-	Addr    string  `json:"addr"`
-	NATType NATType `json:"nat_type"`
-	Token   string  `json:"token"`
+	Addr       string   `json:"addr"`
+	LocalAddrs []string `json:"local_addrs"`
+	NATType    NATType  `json:"nat_type"`
+	Token      string   `json:"token"`
 }
 
 type Resolver struct {
@@ -79,6 +80,7 @@ func (r Resolver) Resolve() (*NATDetail, error) {
 			defer wg.Done()
 			mappedAddr, err := r.test(req.stun, req.changeIp, req.changePort)
 			if err != nil {
+				log.Debugf("stun[%d] %s error: %v\n", idx, req.stun, err)
 				return
 			}
 			mappedAddrs[idx] = mappedAddr
@@ -93,18 +95,22 @@ func (r Resolver) Resolve() (*NATDetail, error) {
 
 	if mappedAddrs[0] != mappedAddrs[1] {
 		nType = NATTypeSymmetric
-	} else if mappedAddrs[0] == mappedAddrs[2] {
+	} else if mappedAddrs[2] != "" && mappedAddrs[0] == mappedAddrs[2] {
 		nType = NATTypeFullCone
-	} else if mappedAddrs[0] == mappedAddrs[3] {
+	} else if mappedAddrs[3] != "" && mappedAddrs[0] == mappedAddrs[3] {
 		nType = NATTypeRestrictedCone
 	} else {
+		// CHANGE-REQUEST unsupported by most public STUN servers; default to most restrictive type
 		nType = NATTypePortRestrictedCone
 	}
 
+	localAddrs := collectLocalAddrs(r.conn)
+
 	return &NATDetail{
-		Addr:    mappedAddrs[0],
-		NATType: nType,
-		Token:   token,
+		Addr:       mappedAddrs[0],
+		LocalAddrs: localAddrs,
+		NATType:    nType,
+		Token:      token,
 	}, nil
 }
 
@@ -180,6 +186,38 @@ func buildMsg(changeIp bool, changePort bool) (*stun.Message, error) {
 	binary.BigEndian.PutUint32(bytes, attr)
 	msg.Add(stun.AttrChangeRequest, bytes)
 	return msg, nil
+}
+
+func collectLocalAddrs(conn net.PacketConn) []string {
+	port := conn.LocalAddr().(*net.UDPAddr).Port
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return nil
+	}
+	var addrs []string
+	for _, iface := range ifaces {
+		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		ifAddrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, a := range ifAddrs {
+			var ip net.IP
+			switch v := a.(type) {
+			case *net.IPNet:
+				ip = v.IP
+			case *net.IPAddr:
+				ip = v.IP
+			}
+			if ip == nil || ip.To4() == nil {
+				continue
+			}
+			addrs = append(addrs, fmt.Sprintf("%s:%d", ip.String(), port))
+		}
+	}
+	return addrs
 }
 
 func GenerateToken() (string, error) {

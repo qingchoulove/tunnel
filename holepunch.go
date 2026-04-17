@@ -103,88 +103,129 @@ func handshakeRemoteSymmetric(tunnel *Tunnel, done chan error) {
 	log.Debugln("handshake remote symmetric ...")
 	remote := tunnel.remoteNAT
 	local := tunnel.localNAT
+	candidates := candidateAddrs(remote)
+
 	conn, err := net.ListenUDP("udp4", &tunnel.localAddr)
 	if err != nil {
 		done <- err
 		return
 	}
-	remoteAddr, err := net.ResolveUDPAddr("udp4", remote.Addr)
-	if err != nil {
-		done <- err
-		return
+
+	stopChan := make(chan struct{})
+	// spray handshakes at all candidates concurrently on the same conn
+	for _, baseAddr := range candidates {
+		baseAddr := baseAddr
+		go func() {
+			r := rand.New(rand.NewSource(time.Now().UnixNano()))
+			randPorts := r.Perm(65535)
+			for i := 0; i < triesNum; i++ {
+				time.Sleep(time.Millisecond)
+				select {
+				case <-stopChan:
+					return
+				default:
+					dst := &net.UDPAddr{IP: baseAddr.IP, Port: randPorts[i]}
+					_ = udpWrite(conn, dst, NewHandshakeMessage(local.Token))
+				}
+			}
+		}()
 	}
 
-	r := rand.New(rand.NewSource(time.Now().UnixNano()))
-	randPorts := r.Perm(65535)
-	stopChan := make(chan int, 1)
-	// send handshake
-	go func() {
-	OUTER:
-		for i := 0; i < triesNum; i++ {
-			time.Sleep(time.Millisecond)
-			select {
-			case <-stopChan:
-				break OUTER
-			default:
-				dst := &net.UDPAddr{
-					IP:   remoteAddr.IP,
-					Port: randPorts[i],
-				}
-				_ = udpWrite(conn, dst, NewHandshakeMessage(local.Token))
-			}
+	for {
+		msg, dst, err := udpRead(conn)
+		if err != nil {
+			close(stopChan)
+			conn.Close()
+			done <- err
+			return
 		}
-	}()
-	// rev response
-	msg, dst, err := udpRead(conn)
-	close(stopChan)
-	if err != nil {
-		done <- err
+		if msg.token != remote.Token {
+			continue
+		}
+		close(stopChan)
+		_ = udpWrite(conn, dst, NewHandshakeMessage(local.Token))
+		tunnel.conn = conn
+		tunnel.remoteAddr = *dst
+		close(done)
 		return
 	}
-	if msg.token != remote.Token {
-		done <- fmt.Errorf("token fail, token: %s", msg.token)
-		return
-	}
-	tunnel.remoteAddr = *dst
-	tunnel.conn = conn
-	close(done)
 }
 
 func handshakeNonSymmetric(tunnel *Tunnel, done chan error) {
 	remote := tunnel.remoteNAT
 	local := tunnel.localNAT
+	candidates := candidateAddrs(remote)
+
 	conn, err := net.ListenUDP("udp4", &tunnel.localAddr)
 	if err != nil {
 		done <- err
 		return
 	}
-	addr, err := net.ResolveUDPAddr("udp4", remote.Addr)
-	if err != nil {
-		done <- err
+
+	stopChan := make(chan struct{})
+	// keep sending handshake to all candidates until we get a response
+	for _, addr := range candidates {
+		addr := addr
+		go func() {
+			for {
+				select {
+				case <-stopChan:
+					return
+				default:
+					if err := udpWrite(conn, addr, NewHandshakeMessage(local.Token)); err != nil {
+						log.Debugf("write err for %s: %s\n", addr, err)
+					}
+					time.Sleep(200 * time.Millisecond)
+				}
+			}
+		}()
+	}
+
+	// read loop: reply to first handshake received, then wait for the reply-ack
+	var remoteAddr *net.UDPAddr
+	for {
+		msg, src, err := udpRead(conn)
+		if err != nil {
+			close(stopChan)
+			conn.Close()
+			log.Debugf("udp read err, %s\n", err)
+			done <- err
+			return
+		}
+		if msg.token != remote.Token {
+			continue
+		}
+		if remoteAddr == nil {
+			// first valid handshake received — reply so the other side can finish
+			remoteAddr = src
+			_ = udpWrite(conn, src, NewHandshakeMessage(local.Token))
+		}
+		// once we've sent our reply (or received theirs), we're done
+		close(stopChan)
+		tunnel.conn = conn
+		tunnel.remoteAddr = *remoteAddr
+		close(done)
 		return
 	}
-	stopChan := make(chan int, 1)
-	// send handshake
-	err = udpWrite(conn, addr, NewHandshakeMessage(local.Token))
-	if err != nil {
-		done <- err
-		return
+}
+
+// candidateAddrs returns all addresses to try for the remote peer:
+// the public (STUN-mapped) address first, followed by any LAN addresses.
+func candidateAddrs(remote *NATDetail) []*net.UDPAddr {
+	seen := map[string]bool{}
+	var addrs []*net.UDPAddr
+	for _, s := range append([]string{remote.Addr}, remote.LocalAddrs...) {
+		if s == "" || seen[s] {
+			continue
+		}
+		seen[s] = true
+		a, err := net.ResolveUDPAddr("udp4", s)
+		if err != nil {
+			continue
+		}
+		addrs = append(addrs, a)
 	}
-	// rev response
-	msg, _, err := udpRead(conn)
-	close(stopChan)
-	if err != nil {
-		log.Debugf("udp read err, %s\n", err)
-		done <- err
-		return
-	}
-	if msg.token != remote.Token {
-		done <- fmt.Errorf("token fail, token: %s", msg.token)
-		return
-	}
-	tunnel.remoteAddr = *addr
-	tunnel.conn = conn
-	close(done)
+	return addrs
 }
 
 func udpWrite(conn *net.UDPConn, addr *net.UDPAddr, msg *Message) error {
